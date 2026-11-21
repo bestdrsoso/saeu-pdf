@@ -237,13 +237,67 @@ class PdfDocument:
 
     def add_textbox(self, page_index, rect, text, fontsize=12,
                     color=(0, 0, 0), fontfile=None, fill=None):
-        """도면 등에 글자 박스 삽입 (영구 콘텐츠). 반환 음수면 삽입 실패."""
+        """
+        글자 박스를 '주석'으로 넣는다. 주석이라 나중에 지우개로 지울 수 있다.
+        내장 한글 폰트를 쓰므로 한글도 정상 출력된다.
+        """
         page = self.doc[page_index]
-        if fill is not None:
-            page.draw_rect(pymupdf.Rect(rect), color=None, fill=fill)
-        rc = self._put_text(page, rect, text, fontsize, color, fontfile)
+        r = pymupdf.Rect(rect)
+        # 글자가 다 들어가도록 박스 보정 (크기는 사용자가 고른 그대로 유지)
+        lines = text.count("\n") + 1
+        need_h = fontsize * 1.5 * lines + 10
+        if r.height < need_h:
+            r = pymupdf.Rect(r.x0, r.y0, r.x1, min(page.rect.y1 - 2, r.y0 + need_h))
+        if r.width < fontsize * 5:
+            r = pymupdf.Rect(r.x0, r.y0,
+                             min(page.rect.x1 - 2, r.x0 + max(140, fontsize * 10)),
+                             r.y1)
+        annot = page.add_freetext_annot(
+            r, text, fontsize=fontsize, fontname="korea",
+            text_color=color, fill_color=fill, border_width=0, align=0)
+        annot.set_info(content=text)
+        annot.update()
         self.dirty = True
-        return rc
+        return 0
+
+    # ---- 지우기 ------------------------------------------------------
+    def delete_annots_in(self, page_index, rect):
+        """
+        지정 영역과 겹치는 주석을 지운다. 지운 개수 반환.
+        * 순회 중 삭제는 내부 참조가 깨져 프로그램이 죽을 수 있으므로
+          delete_annot 이 돌려주는 '다음 주석'을 따라간다.
+        """
+        page = self.doc[page_index]
+        r = pymupdf.Rect(rect)
+        n = 0
+        annot = page.first_annot
+        while annot:
+            if annot.rect.intersects(r):
+                annot = page.delete_annot(annot)   # 다음 주석을 돌려준다
+                n += 1
+            else:
+                annot = annot.next
+        if n:
+            self.dirty = True
+        return n
+
+    def has_content_in(self, page_index, rect):
+        """그 영역에 글자나 그림(주석이 아닌 것)이 있는지."""
+        page = self.doc[page_index]
+        r = pymupdf.Rect(rect)
+        if page.get_text("text", clip=r).strip():
+            return True
+        for img in page.get_image_info():
+            if pymupdf.Rect(img["bbox"]).intersects(r):
+                return True
+        return False
+
+    def whiteout(self, page_index, rect):
+        """그 영역을 흰색으로 덮어 지운다(아래 내용도 같이 지워짐)."""
+        page = self.doc[page_index]
+        page.add_redact_annot(pymupdf.Rect(rect), fill=(1, 1, 1))
+        page.apply_redactions()
+        self.dirty = True
 
     def add_image(self, page_index, rect, image_path):
         """이미지(서명/도장 포함) 삽입."""

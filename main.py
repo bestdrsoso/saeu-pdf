@@ -29,7 +29,7 @@ from hwp_convert import HwpNotAvailable
 import fonts
 
 APP_NAME = "새우PDF"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 # 업데이트 파일이 올라가는 곳 (GitHub raw)
 UPDATE_BASE = "https://raw.githubusercontent.com/bestdrsoso/saeu-pdf/main/"
 
@@ -42,12 +42,12 @@ def app_dir():
 
 # 도구 모드
 T_PAN, T_HILITE, T_UNDER, T_PEN, T_RECT, T_CIRCLE, T_LINE, \
-    T_TEXT, T_IMAGE, T_EDIT = range(10)
+    T_TEXT, T_IMAGE, T_EDIT, T_ERASE = range(11)
 
 TOOL_LABELS = {
     T_PAN: "손(이동)", T_HILITE: "형광펜", T_UNDER: "밑줄", T_PEN: "펜",
     T_RECT: "사각형", T_CIRCLE: "원", T_LINE: "선", T_TEXT: "텍스트상자",
-    T_IMAGE: "이미지", T_EDIT: "텍스트수정",
+    T_IMAGE: "이미지", T_EDIT: "텍스트수정", T_ERASE: "지우개",
 }
 
 GAP = 14  # 페이지 사이 간격(픽셀)
@@ -60,7 +60,7 @@ DEFAULT_SHORTCUTS = {
     "이전페이지": "PgUp", "다음페이지": "PgDown",
     "손선택": "V", "형광펜": "H", "펜": "P",
     "사각형": "R", "원": "C", "선": "L", "텍스트상자": "T",
-    "이미지": "I",
+    "이미지": "I", "지우개": "D",
     "다음찾기": "F3", "이전찾기": "Shift+F3", "검색표시지움": "Ctrl+Shift+F",
 }
 
@@ -357,7 +357,8 @@ class ContinuousView(QGraphicsView):
                 self._temp.append(self.scene_.addLine(
                     self._pts[i - 1].x(), self._pts[i - 1].y(),
                     self._pts[i].x(), self._pts[i].y(), pen))
-        elif self.tool in (T_RECT, T_HILITE, T_UNDER, T_TEXT, T_IMAGE, T_EDIT):
+        elif self.tool in (T_RECT, T_HILITE, T_UNDER, T_TEXT, T_IMAGE, T_EDIT,
+                           T_ERASE):
             r = QRectF(self._start, cur).normalized()
             if self.tool == T_HILITE:
                 self._temp.append(self.scene_.addRect(r, QPen(Qt.NoPen),
@@ -461,6 +462,27 @@ class ContinuousView(QGraphicsView):
             doc.add_circle(pi, rect, color=self.color, width=self.width)
         elif self.tool == T_LINE:
             doc.add_line(pi, (sx, sy), (ex, ey), color=self.color, width=self.width)
+        elif self.tool == T_ERASE:
+            # 클릭만 했으면 그 주변을 조금 넓혀서 찾는다
+            if rect[2] - rect[0] < 8 or rect[3] - rect[1] < 8:
+                cx, cy = rect[0], rect[1]
+                rect = (cx - 7, cy - 7, cx + 7, cy + 7)
+            n = doc.delete_annots_in(pi, rect)
+            if n:
+                self.win.statusBar().showMessage(f"{n}개 지웠습니다", 2500)
+            elif doc.has_content_in(pi, rect):
+                r = QMessageBox.question(
+                    self, APP_NAME,
+                    "여기에는 지울 주석(형광펜·펜·글상자 등)이 없습니다.\n\n"
+                    "도면에 원래 있던 내용이나 넣은 이미지를\n"
+                    "흰색으로 덮어서 지울까요?\n"
+                    "(그 자리에 있던 것이 함께 지워집니다)",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if r == QMessageBox.Yes:
+                    doc.whiteout(pi, rect)
+                    self.win.statusBar().showMessage("흰색으로 덮었습니다", 2500)
+            else:
+                self.win.statusBar().showMessage("지울 것이 없습니다", 2000)
         elif self.tool == T_IMAGE:
             if self.win.pending_image:
                 doc.add_image(pi, rect, self.win.pending_image)
@@ -470,6 +492,8 @@ class ContinuousView(QGraphicsView):
                 return
         self.invalidate_page(pi)
         self.win.update_title()
+        # 한 번 쓰면 자동으로 손(이동) 으로 돌아간다
+        self.win.pick_tool(T_PAN)
 
     # ---------- 오른쪽 클릭 메뉴 ----------
     def contextMenuEvent(self, e):
@@ -483,11 +507,13 @@ class ContinuousView(QGraphicsView):
         mnu.addAction("📝 여기에 텍스트상자", lambda: self._ctx_textbox(sp, pi))
         mnu.addAction("🖼 여기에 이미지 넣기", lambda: self._ctx_image(pi))
         mnu.addSeparator()
+        mnu.addAction("🧽 여기 주석 지우기", lambda: self._ctx_erase(sp, pi))
         mnu.addAction("↩ 실행취소 (Ctrl+Z)", w.undo)
         mnu.addSeparator()
 
         tools = mnu.addMenu("도구 바꾸기")
-        for t in (T_PAN, T_HILITE, T_PEN, T_RECT, T_CIRCLE, T_LINE, T_TEXT):
+        for t in (T_PAN, T_HILITE, T_PEN, T_RECT, T_CIRCLE, T_LINE, T_TEXT,
+                  T_ERASE):
             act = tools.addAction(TOOL_LABELS[t], lambda tt=t: w.pick_tool(tt))
             act.setCheckable(True)
             act.setChecked(self.tool == t)
@@ -522,6 +548,17 @@ class ContinuousView(QGraphicsView):
                        (rect[2] - rect[0]) * self.zoom,
                        (rect[3] - rect[1]) * self.zoom)
         self._begin_inline(pi, rect, srect, "", "text")
+
+    def _ctx_erase(self, sp, pi):
+        if pi is None:
+            return
+        px, py = self.to_page_pt(pi, sp)
+        self.win.push_undo()
+        n = self.win.doc.delete_annots_in(pi, (px - 8, py - 8, px + 8, py + 8))
+        self.invalidate_page(pi)
+        self.win.statusBar().showMessage(
+            f"{n}개 지웠습니다" if n else "그 자리에 지울 주석이 없습니다", 2500)
+        self.win.update_title()
 
     def _ctx_image(self, pi):
         self.win.choose_image()
@@ -598,6 +635,7 @@ class ContinuousView(QGraphicsView):
             b.hide()
             b.deleteLater()
         self.win.toggle_letter_shortcuts(True)
+        self.win.pick_tool(T_PAN)      # 하나 쓰면 손(이동) 으로 복귀
         if not apply_:
             return
         doc = self.win.doc
@@ -932,7 +970,8 @@ class MainWindow(QMainWindow):
                 self._rbtn("╱", "선", tool=T_LINE)]),
             self._group("삽입/수정", [
                 self._rbtn("🅰", "텍스트상자", tool=T_TEXT),
-                self._rbtn("🖼", "이미지", self.choose_image)]),
+                self._rbtn("🖼", "이미지", self.choose_image),
+                self._rbtn("🧽", "지우개", tool=T_ERASE)]),
             self._group("스타일", [style_w]),
             self._group("찾기", [search_w]),
             self._group("설정", [
@@ -1070,6 +1109,7 @@ class MainWindow(QMainWindow):
             "원": lambda: self.pick_tool(T_CIRCLE),
             "선": lambda: self.pick_tool(T_LINE),
             "텍스트상자": lambda: self.pick_tool(T_TEXT),
+            "지우개": lambda: self.pick_tool(T_ERASE),
             "이미지": lambda: self.pick_tool(T_IMAGE),
             "다음찾기": self.next_hit, "이전찾기": self.prev_hit,
             "검색표시지움": self.clear_search,
