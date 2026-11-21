@@ -8,7 +8,8 @@ import sys
 import tempfile
 import urllib.parse
 
-from PySide6.QtCore import Qt, QRectF, Signal, QSize, QTimer, QEvent
+from PySide6.QtCore import (Qt, QRectF, QPoint, QPointF, Signal, QSize,
+                            QTimer, QEvent)
 from PySide6.QtGui import (QAction, QImage, QPixmap, QPainter, QPen, QColor,
                            QBrush, QIcon, QKeySequence)
 from PySide6.QtWidgets import (
@@ -28,7 +29,7 @@ from hwp_convert import HwpNotAvailable
 import fonts
 
 APP_NAME = "새우PDF"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 # 업데이트 파일이 올라가는 곳 (GitHub raw)
 UPDATE_BASE = "https://raw.githubusercontent.com/bestdrsoso/saeu-pdf/main/"
 
@@ -44,7 +45,7 @@ T_PAN, T_HILITE, T_UNDER, T_PEN, T_RECT, T_CIRCLE, T_LINE, \
     T_TEXT, T_IMAGE, T_EDIT = range(10)
 
 TOOL_LABELS = {
-    T_PAN: "손/텍스트선택", T_HILITE: "형광펜", T_UNDER: "밑줄", T_PEN: "펜",
+    T_PAN: "손(이동)", T_HILITE: "형광펜", T_UNDER: "밑줄", T_PEN: "펜",
     T_RECT: "사각형", T_CIRCLE: "원", T_LINE: "선", T_TEXT: "텍스트상자",
     T_IMAGE: "이미지", T_EDIT: "텍스트수정",
 }
@@ -76,7 +77,7 @@ class ContinuousView(QGraphicsView):
         self.setScene(self.scene_)
         self.setRenderHint(QPainter.Antialiasing)
         self.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        self.setDragMode(QGraphicsView.NoDrag)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
 
         self.zoom = 1.5
         self.tool = T_PAN
@@ -267,16 +268,54 @@ class ContinuousView(QGraphicsView):
 
     def set_tool(self, t):
         self.tool = t
+        # 기본(손) 일 때는 드래그로 도면이 끌려 움직인다
+        self.setDragMode(QGraphicsView.ScrollHandDrag if t == T_PAN
+                         else QGraphicsView.NoDrag)
 
     # ---------- 마우스 ----------
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
             factor = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
             self.win.fit_mode = None
-            self.set_zoom(self.zoom * factor)
+            self.zoom_at(e.position().toPoint(), factor)
             e.accept()
         else:
             super().wheelEvent(e)
+
+    def zoom_at(self, view_pos, factor):
+        """마우스 커서가 가리키는 지점을 그대로 둔 채 확대/축소."""
+        if not self.page_rects:
+            self.set_zoom(self.zoom * factor)
+            return
+        sp = self.mapToScene(view_pos)
+        pi = self.page_at(sp)
+        if pi is None:
+            self.set_zoom(self.zoom * factor)
+            return
+        px, py = self.to_page_pt(pi, sp)          # 줌과 무관한 페이지 좌표
+        new_zoom = max(0.25, min(self.zoom * factor, 8.0))
+        if abs(new_zoom - self.zoom) < 1e-9:
+            return
+        self.zoom = new_zoom
+        self.rebuild()
+        # 같은 지점이 새 배율에서 갖는 위치
+        x0, y0, _w, _h = self.page_rects[pi]
+        target = QPointF(x0 + px * self.zoom, y0 + py * self.zoom)
+        # 그 지점이 커서 자리에 오도록 스크롤을 민다
+        # (스크롤 한계에 걸릴 수 있어 두 번 맞춘다)
+        for _ in range(2):
+            now = self.mapFromScene(target)
+            dx = now.x() - view_pos.x()
+            dy = now.y() - view_pos.y()
+            if abs(dx) < 1 and abs(dy) < 1:
+                break
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() + int(round(dx)))
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() + int(round(dy)))
+        self.cur_page = pi
+        self.render_visible()
+        self.zoomChanged.emit(self.zoom)
 
     def _clear_temp(self):
         for it in self._temp:
@@ -289,6 +328,11 @@ class ContinuousView(QGraphicsView):
         self._sel = []
 
     def mousePressEvent(self, e):
+        # 손(이동) 도구에서 그냥 끌면 도면이 움직인다.
+        # 글자를 선택하고 싶을 때만 Ctrl 을 누른 채 끈다.
+        if self.tool == T_PAN and not (e.modifiers() & Qt.ControlModifier):
+            self._clear_sel()
+            return super().mousePressEvent(e)
         if self.win.doc.is_open() and e.button() == Qt.LeftButton:
             self._start = self.mapToScene(e.position().toPoint())
             self._pts = [self._start]
