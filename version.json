@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "notes": "첫 배포 버전",
+  "files": [
+    "main.py",
+    "pdfcore.py",
+    "hwp_convert.py",
+    "fonts.py",
+    "requirements.txt",
+    "사용설명서.txt",
+    "shortcuts.json"
+  ]
+}
