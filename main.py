@@ -29,7 +29,7 @@ from hwp_convert import HwpNotAvailable
 import fonts
 
 APP_NAME = "새우PDF"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.8"
 # 업데이트 파일이 올라가는 곳 (GitHub raw)
 UPDATE_OWNER = "bestdrsoso"
 UPDATE_REPO = "saeu-pdf"
@@ -65,7 +65,7 @@ DEFAULT_SHORTCUTS = {
     "인쇄": "Ctrl+P", "검색": "Ctrl+F", "실행취소": "Ctrl+Z",
     "확대": "Ctrl+=", "축소": "Ctrl+-", "폭맞춤": "Ctrl+0", "화면맞춤": "Ctrl+9",
     "이전페이지": "PgUp", "다음페이지": "PgDown",
-    "손선택": "V", "형광펜": "H", "펜": "P",
+    "손선택": "V",
     "사각형": "R", "원": "C", "선": "L", "텍스트상자": "T",
     "이미지": "I", "지우개": "D",
     "다음찾기": "F3", "이전찾기": "Shift+F3", "검색표시지움": "Ctrl+Shift+F",
@@ -519,8 +519,7 @@ class ContinuousView(QGraphicsView):
         mnu.addSeparator()
 
         tools = mnu.addMenu("도구 바꾸기")
-        for t in (T_PAN, T_HILITE, T_PEN, T_RECT, T_CIRCLE, T_LINE, T_TEXT,
-                  T_ERASE):
+        for t in (T_PAN, T_RECT, T_CIRCLE, T_LINE, T_TEXT, T_ERASE):
             act = tools.addAction(TOOL_LABELS[t], lambda tt=t: w.pick_tool(tt))
             act.setCheckable(True)
             act.setChecked(self.tool == t)
@@ -664,6 +663,29 @@ class ContinuousView(QGraphicsView):
         self.win.update_title()
 
 
+def load_settings():
+    import json
+    p = os.path.join(app_dir(), "settings.json")
+    data = {"auto_update_check": not getattr(sys, "frozen", False)}
+    try:
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                data.update(json.load(f))
+    except Exception:
+        pass
+    return data
+
+
+def save_settings(data):
+    import json
+    try:
+        with open(os.path.join(app_dir(), "settings.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def _ver_tuple(s):
     out = []
     for part in str(s).split("."):
@@ -764,6 +786,7 @@ class MainWindow(QMainWindow):
         self.search_idx = -1
         self.undo_stack = []
         self._shortcut_actions = []
+        self.settings = load_settings()
         self.fit_mode = "width"     # width | page | None(수동 줌)
 
         self.setWindowTitle(APP_NAME)
@@ -780,7 +803,8 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
         self.view.zoomChanged.connect(self._on_zoom)
         self.update_title()
-        QTimer.singleShot(2000, lambda: self.check_update(silent=True))
+        if self.settings.get("auto_update_check", True):
+            QTimer.singleShot(2000, lambda: self.check_update(silent=True))
 
     # ---------- 썸네일 ----------
     def _build_thumbs(self):
@@ -869,6 +893,10 @@ class MainWindow(QMainWindow):
         mnu.addSeparator()
         mnu.addAction(f"업데이트 확인  (현재 {APP_VERSION})",
                       lambda: self.check_update(silent=False))
+        act = mnu.addAction("켤 때 자동으로 업데이트 확인")
+        act.setCheckable(True)
+        act.setChecked(self.settings.get("auto_update_check", True))
+        act.toggled.connect(self._set_auto_update)
         b.setMenu(mnu)
         return b
 
@@ -967,11 +995,8 @@ class MainWindow(QMainWindow):
             self._group("파일", [self._file_button()]),
             self._group("보기", [
                 self._rbtn("↔", "폭맞춤", self.fit_width),
-                self._rbtn("⛶", "화면맞춤", self.fit_page),
-                self._rbtn("1:1", "실제크기", self.zoom_actual)]),
+                self._rbtn("⛶", "화면맞춤", self.fit_page)]),
             self._group("주석", [
-                self._rbtn("🖍", "형광펜", tool=T_HILITE),
-                self._rbtn("✏", "펜", tool=T_PEN),
                 self._rbtn("▭", "사각형", tool=T_RECT),
                 self._rbtn("◯", "원", tool=T_CIRCLE),
                 self._rbtn("╱", "선", tool=T_LINE)]),
@@ -1110,8 +1135,6 @@ class MainWindow(QMainWindow):
             "폭맞춤": self.fit_width, "화면맞춤": self.fit_page,
             "이전페이지": self.prev_page, "다음페이지": self.next_page,
             "손선택": lambda: self.pick_tool(T_PAN),
-            "형광펜": lambda: self.pick_tool(T_HILITE),
-            "펜": lambda: self.pick_tool(T_PEN),
             "사각형": lambda: self.pick_tool(T_RECT),
             "원": lambda: self.pick_tool(T_CIRCLE),
             "선": lambda: self.pick_tool(T_LINE),
@@ -1138,6 +1161,13 @@ class MainWindow(QMainWindow):
             a.deleteLater()
         self._shortcut_actions = []
         self._build_shortcuts()
+
+    def _set_auto_update(self, on):
+        self.settings["auto_update_check"] = bool(on)
+        save_settings(self.settings)
+        self.statusBar().showMessage(
+            "켤 때 업데이트를 자동으로 확인합니다" if on
+            else "자동 확인을 껐습니다 ([파일] → 업데이트 확인 으로 직접 확인)", 4000)
 
     # ---------- 업데이트 ----------
     def check_update(self, silent=True):
@@ -1168,11 +1198,19 @@ class MainWindow(QMainWindow):
 
         notes = info.get("notes", "")
         if getattr(sys, "frozen", False):
-            QMessageBox.information(
+            self._skip_update = latest
+            r = QMessageBox.question(
                 self, APP_NAME,
                 f"새 버전 {latest} 이 나왔습니다.\n\n{notes}\n\n"
                 f"exe 로 쓰고 계셔서 자동 교체가 안 됩니다.\n"
-                f"소스 폴더에서 'exe만들기.bat' 을 다시 실행해 주세요.")
+                f"소스 폴더에서 'exe만들기.bat' 을 다시 실행하면 적용됩니다.\n\n"
+                f"앞으로 켤 때마다 이 알림을 띄울까요?\n"
+                f"[아니오] 를 고르면 다시 묻지 않습니다. "
+                f"([파일] → 업데이트 확인 으로 직접 확인할 수 있습니다)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if r == QMessageBox.No:
+                self.settings["auto_update_check"] = False
+                save_settings(self.settings)
             return
 
         r = QMessageBox.question(
