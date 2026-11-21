@@ -28,7 +28,7 @@ from hwp_convert import HwpNotAvailable
 import fonts
 
 APP_NAME = "새우PDF"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.3"
 # 업데이트 파일이 올라가는 곳 (GitHub raw)
 UPDATE_BASE = "https://raw.githubusercontent.com/bestdrsoso/saeu-pdf/main/"
 
@@ -58,7 +58,7 @@ DEFAULT_SHORTCUTS = {
     "확대": "Ctrl+=", "축소": "Ctrl+-", "폭맞춤": "Ctrl+0", "화면맞춤": "Ctrl+9",
     "이전페이지": "PgUp", "다음페이지": "PgDown",
     "손선택": "V", "형광펜": "H", "펜": "P",
-    "사각형": "R", "원": "C", "선": "L", "글상자": "T",
+    "사각형": "R", "원": "C", "선": "L", "텍스트상자": "T",
     "이미지": "I",
     "다음찾기": "F3", "이전찾기": "Shift+F3", "검색표시지움": "Ctrl+Shift+F",
 }
@@ -596,8 +596,11 @@ class ShortcutDialog(QDialog):
         self.setWindowTitle("단축키 설정")
         self.resize(460, 620)
         outer = QVBoxLayout(self)
-        outer.addWidget(QLabel("바꿀 칸을 클릭하고 원하는 키를 누르세요. "
-                               "(지우려면 비워두기)"))
+        info = QLabel("바꿀 칸을 클릭하고 원하는 키를 누르세요.\n"
+                      "· 그 단축키를 없애려면 오른쪽 [지우기] 버튼을 누르세요.\n"
+                      "· 백스페이스·Delete 도 키로 인식되니, 지울 때는 [지우기] 를 쓰세요.")
+        info.setStyleSheet("color:#555;")
+        outer.addWidget(info)
 
         inner = QWidget()
         grid = QGridLayout(inner)
@@ -606,7 +609,16 @@ class ShortcutDialog(QDialog):
         for row, name in enumerate(DEFAULT_SHORTCUTS.keys()):
             grid.addWidget(QLabel(name), row, 0)
             ed = QKeySequenceEdit(QKeySequence(win.shortcut_keys.get(name, "")))
+            try:
+                ed.setMaximumSequenceLength(1)   # 한 조합만 받기
+            except Exception:
+                pass
             grid.addWidget(ed, row, 1)
+            btn = QPushButton("지우기")
+            btn.setFixedWidth(62)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.clicked.connect(lambda _=False, e=ed: e.clear())
+            grid.addWidget(btn, row, 2)
             self.edits[name] = ed
         sa = QScrollArea()
         sa.setWidget(inner)
@@ -865,7 +877,6 @@ class MainWindow(QMainWindow):
         home = self._tab([
             self._group("파일", [self._file_button()]),
             self._group("보기", [
-                self._rbtn("✋", "손/선택", tool=T_PAN),
                 self._rbtn("↔", "폭맞춤", self.fit_width),
                 self._rbtn("⛶", "화면맞춤", self.fit_page),
                 self._rbtn("1:1", "실제크기", self.zoom_actual)]),
@@ -880,6 +891,8 @@ class MainWindow(QMainWindow):
                 self._rbtn("🖼", "이미지", self.choose_image)]),
             self._group("스타일", [style_w]),
             self._group("찾기", [search_w]),
+            self._group("설정", [
+                self._rbtn("⌨", "단축키", self.open_shortcut_dialog)]),
         ])
         rib.addTab(home, "홈")
 
@@ -906,11 +919,35 @@ class MainWindow(QMainWindow):
         r, g, b = [int(c * 255) for c in self.view.color]
         self.color_btn.setStyleSheet(f"background:rgb({r},{g},{b}); color:white;")
 
+    BASIC_COLORS = [
+        ("빨강", (1.0, 0.0, 0.0)), ("파랑", (0.0, 0.0, 1.0)),
+        ("검정", (0.0, 0.0, 0.0)), ("초록", (0.0, 0.6, 0.0)),
+        ("노랑", (1.0, 0.85, 0.0)), ("주황", (1.0, 0.5, 0.0)),
+        ("보라", (0.6, 0.0, 0.8)), ("하늘", (0.0, 0.7, 1.0)),
+        ("회색", (0.5, 0.5, 0.5)), ("흰색", (1.0, 1.0, 1.0)),
+    ]
+
     def pick_color(self):
+        """색은 자주 쓰는 것만 간단히. 정 필요하면 '다른 색…' 으로."""
+        mnu = QMenu(self)
+        for name, c in self.BASIC_COLORS:
+            pm = QPixmap(18, 18)
+            pm.fill(QColor.fromRgbF(*c))
+            act = mnu.addAction(QIcon(pm), name)
+            act.triggered.connect(lambda _=False, cc=c: self.set_color(cc))
+        mnu.addSeparator()
+        mnu.addAction("다른 색…", self._pick_color_dialog)
+        mnu.exec(self.color_btn.mapToGlobal(
+            self.color_btn.rect().bottomLeft()))
+
+    def set_color(self, c):
+        self.view.color = c
+        self._apply_color_btn()
+
+    def _pick_color_dialog(self):
         c = QColorDialog.getColor(parent=self)
         if c.isValid():
-            self.view.color = (c.redF(), c.greenF(), c.blueF())
-            self._apply_color_btn()
+            self.set_color((c.redF(), c.greenF(), c.blueF()))
 
     # ---------- 메뉴 ----------
     def _build_statusbar(self):
@@ -988,7 +1025,7 @@ class MainWindow(QMainWindow):
             "사각형": lambda: self.pick_tool(T_RECT),
             "원": lambda: self.pick_tool(T_CIRCLE),
             "선": lambda: self.pick_tool(T_LINE),
-            "글상자": lambda: self.pick_tool(T_TEXT),
+            "텍스트상자": lambda: self.pick_tool(T_TEXT),
             "이미지": lambda: self.pick_tool(T_IMAGE),
             "다음찾기": self.next_hit, "이전찾기": self.prev_hit,
             "검색표시지움": self.clear_search,
@@ -1121,6 +1158,12 @@ class MainWindow(QMainWindow):
         b = self.tool_btns.button(t)
         if b:
             b.setChecked(True)
+        else:
+            # 손/선택 처럼 리본에 버튼이 없는 도구 → 모든 도구 선택 해제
+            self.tool_btns.setExclusive(False)
+            for btn in self.tool_btns.buttons():
+                btn.setChecked(False)
+            self.tool_btns.setExclusive(True)
         self._set_tool(t)
 
     def _set_fontsize(self, v):
