@@ -1,13 +1,12 @@
 {
-  "version": "1.0.5",
-  "notes": "지우개 추가(형광펜·펜·글상자 등 삭제, 저장 후에도 가능) / 도구는 한 번 쓰면 손으로 자동 복귀 / 텍스트상자를 지울 수 있는 방식으로 변경",
+  "version": "1.0.6",
+  "notes": "업데이트가 반복해서 뜨던 문제 수정 (서버 캐시로 옛 파일이 내려오던 것). 단축키 설정은 업데이트해도 유지됩니다.",
   "files": [
     "main.py",
     "pdfcore.py",
     "hwp_convert.py",
     "fonts.py",
     "requirements.txt",
-    "사용설명서.txt",
-    "shortcuts.json"
+    "사용설명서.txt"
   ]
 }

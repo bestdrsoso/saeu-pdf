@@ -29,9 +29,16 @@ from hwp_convert import HwpNotAvailable
 import fonts
 
 APP_NAME = "새우PDF"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 # 업데이트 파일이 올라가는 곳 (GitHub raw)
-UPDATE_BASE = "https://raw.githubusercontent.com/bestdrsoso/saeu-pdf/main/"
+UPDATE_OWNER = "bestdrsoso"
+UPDATE_REPO = "saeu-pdf"
+UPDATE_BASE = f"https://raw.githubusercontent.com/{UPDATE_OWNER}/{UPDATE_REPO}/main/"
+
+
+def raw_base(ref="main"):
+    """커밋 고유번호(ref)로 받으면 서버 캐시와 상관없이 정확한 파일을 받는다."""
+    return f"https://raw.githubusercontent.com/{UPDATE_OWNER}/{UPDATE_REPO}/{ref}/"
 
 
 def app_dir():
@@ -1150,6 +1157,8 @@ class MainWindow(QMainWindow):
                     f"업데이트 서버에 연결하지 못했습니다.\n\n{ex}")
             return
         latest = info.get("version", "0")
+        if silent and latest == getattr(self, "_skip_update", None):
+            return      # 이번 실행에서 이미 실패한 버전은 다시 묻지 않는다
         if _ver_tuple(latest) <= _ver_tuple(APP_VERSION):
             if not silent:
                 QMessageBox.information(
@@ -1175,20 +1184,42 @@ class MainWindow(QMainWindow):
             self._do_update(info)
 
     def _do_update(self, info):
+        import re
         import urllib.request
         files = info.get("files") or [
             "main.py", "pdfcore.py", "hwp_convert.py", "fonts.py",
             "requirements.txt", "사용설명서.txt"]
+        # 사용자가 바꾼 설정은 덮어쓰지 않는다
+        files = [f for f in files if f not in ("shortcuts.json",)]
+        base = raw_base(info.get("ref") or "main")
         dest = app_dir()
         got = {}
         try:
             for f in files:
-                url = UPDATE_BASE + urllib.parse.quote(f)
-                with urllib.request.urlopen(url, timeout=30) as r:
+                url = base + urllib.parse.quote(f)
+                req = urllib.request.Request(
+                    url, headers={"Cache-Control": "no-cache",
+                                  "Pragma": "no-cache"})
+                with urllib.request.urlopen(req, timeout=30) as r:
                     got[f] = r.read()
         except Exception as ex:
             QMessageBox.critical(self, APP_NAME, f"내려받기 실패: {ex}")
             return
+
+        # 받은 파일이 정말 새 버전인지 확인 (서버 캐시 때문에 옛 파일이 올 수 있음)
+        want = info.get("version")
+        newmain = got.get("main.py", b"").decode("utf-8", "ignore")
+        if newmain and want:
+            mv = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', newmain)
+            if mv and mv.group(1) != want:
+                self._skip_update = want
+                QMessageBox.information(
+                    self, APP_NAME,
+                    f"새 버전 {want} 이 아직 서버에 완전히 반영되지 않았습니다.\n"
+                    f"(받아보니 {mv.group(1)} 이 내려옴)\n\n"
+                    f"몇 분 뒤 [파일] → 업데이트 확인 으로 다시 시도해 주세요.\n"
+                    f"이번 실행에서는 다시 묻지 않습니다.")
+                return
         try:
             for f, data in got.items():
                 with open(os.path.join(dest, f), "wb") as fp:
